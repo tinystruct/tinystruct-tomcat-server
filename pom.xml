@@ -6,7 +6,7 @@
     <name>tomcat server module</name>
     <groupId>org.tinystruct</groupId>
     <artifactId>tinystruct-tomcat-server</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
     <description>A tinystruct-based module to enable tomcat server support.</description>
     <url>https://tinystruct.org</url>
     <licenses>

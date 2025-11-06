@@ -6,7 +6,7 @@
     <name>tomcat server module</name>
     <groupId>org.tinystruct</groupId>
     <artifactId>tinystruct-tomcat-server</artifactId>
-    <version>1.0.1</version>
+    <version>1.0.2</version>
     <description>A tinystruct-based module to enable tomcat server support.</description>
     <url>https://tinystruct.org</url>
     <licenses>
@@ -32,7 +32,7 @@
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <tomcat.embed.version>11.0.11</tomcat.embed.version>
-        <tinystruct.version>1.7.8</tinystruct.version>
+        <tinystruct.version>1.7.9</tinystruct.version>
     </properties>
     <dependencies>
         <dependency>

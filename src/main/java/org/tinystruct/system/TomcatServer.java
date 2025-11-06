@@ -346,7 +346,6 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
                 }
 
                 context.setAttribute(HTTP_HOST, getHost(request) + url_prefix);
-                context.setAttribute(METHOD, request.getMethod());
 
                 String[] parameterNames = _request.parameterNames();
                 for (String parameter : parameterNames) {

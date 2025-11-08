@@ -32,7 +32,8 @@
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <tomcat.embed.version>11.0.11</tomcat.embed.version>
-        <tinystruct.version>1.7.9</tinystruct.version>
+        <tinystruct.version>1.7.10</tinystruct.version>
+        <jupiter.version>6.0.1</jupiter.version>
     </properties>
     <dependencies>
         <dependency>
@@ -50,6 +51,12 @@
             <groupId>org.apache.tomcat.embed</groupId>
             <artifactId>tomcat-embed-core</artifactId>
             <version>${tomcat.embed.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <version>${jupiter.version}</version>
+            <scope>test</scope>
         </dependency>
     </dependencies>
     <build>

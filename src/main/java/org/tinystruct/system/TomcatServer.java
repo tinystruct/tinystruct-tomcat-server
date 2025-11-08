@@ -68,7 +68,7 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
             @Argument(key = "http.proxyPort", description = "Proxy port for http"),
             @Argument(key = "https.proxyHost", description = "Proxy host for https"),
             @Argument(key = "https.proxyPort", description = "Proxy port for https")
-    }, example = "bin/dispatcher start --import org.tinystruct.system.TomcatServer --server-port 777", mode = org.tinystruct.application.Action.Mode.CLI)
+    }, example = "bin/dispatcher start --import org.tinystruct.system.TomcatServer --server-port 777", mode = Action.Mode.CLI)
     @Override
     public void start() throws ApplicationException {
         if (started) return;
@@ -111,7 +111,7 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
             }
         }
 
-        System.out.println(ApplicationManager.call("--logo", null, org.tinystruct.application.Action.Mode.CLI));
+        System.out.println(ApplicationManager.call("--logo", null, Action.Mode.CLI));
 
         final long start = System.currentTimeMillis();
         final String webappDirLocation = ".";
@@ -150,7 +150,16 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
 
             // Open the default browser
             getContext().setAttribute("--url", "http://localhost:" + webPort);
-            ApplicationManager.call("open", getContext(), org.tinystruct.application.Action.Mode.CLI);
+            ApplicationManager.call("open", getContext(), Action.Mode.CLI);
+
+            // Keep the server running
+            logger.info("Server is running. Press Ctrl+C to stop.");
+
+            // Add shutdown hook
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                logger.info("Shutting down HTTP server...");
+                stop();
+            }));
 
             tomcat.getServer().await();
         } catch (LifecycleException e) {
@@ -361,7 +370,8 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
 
                 String query = _request.getParameter("q");
                 if (query != null) {
-                    handleRequest(query, context, _response);
+                    Action.Mode mode = Action.Mode.fromName(request.getMethod());
+                    handleRequest(query, context, _response, mode);
                 } else {
                     handleDefaultPage(context, _response);
                 }
@@ -438,12 +448,13 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
          * @param query    The query string
          * @param context  The application context
          * @param response The HTTP response object
+         * @param mode
          * @throws IOException if an I/O error occurs
          */
-        private void handleRequest(String query, org.tinystruct.application.Context context, Response<HttpServletResponse, ServletOutputStream> response) throws IOException, ApplicationException {
+        private void handleRequest(String query, org.tinystruct.application.Context context, Response<HttpServletResponse, ServletOutputStream> response, Action.Mode mode) throws IOException, ApplicationException {
             // Handle request
             query = StringUtilities.htmlSpecialChars(query);
-            Object message = ApplicationManager.call(query, context);
+            Object message = ApplicationManager.call(query, context, mode);
             if (message != null) {
                 if (message instanceof byte[]) {
                     byte[] bytes = (byte[]) message;
@@ -470,7 +481,7 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
          */
         private void handleDefaultPage(org.tinystruct.application.Context context, Response<HttpServletResponse, ServletOutputStream> response) throws IOException, ApplicationException {
             try (BufferedWriter bufferedWriter = getWriter(response.get())) {
-                bufferedWriter.write(String.valueOf(ApplicationManager.call(settings.getOrDefault("default.home.page", "say/Praise the Lord."), context)));
+                bufferedWriter.write(String.valueOf(ApplicationManager.call(settings.getOrDefault("default.home.page", "say/Praise the Lord."), context, Action.Mode.HTTP_GET)));
             }
         }
 

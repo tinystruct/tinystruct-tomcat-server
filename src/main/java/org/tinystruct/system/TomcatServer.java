@@ -188,7 +188,7 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
     public void stop() {
     }
 
-    @Action(value = "error", description = "Error page")
+    @Action(value = "error", description = "Error page", mode = Action.Mode.HTTP_GET)
     public Object exceptionCaught() throws ApplicationException {
         Request request = (Request) getContext().getAttribute(HTTP_REQUEST);
         Response response = (Response) getContext().getAttribute(HTTP_RESPONSE);

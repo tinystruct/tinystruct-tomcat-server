@@ -393,7 +393,7 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
 
         private void handleSSE(org.tinystruct.application.Context context, Request<HttpServletRequest, ServletInputStream> request,
                                Response<HttpServletResponse, ServletOutputStream> response) throws IOException {
-            response.addHeader(Header.CONTENT_TYPE.name(), "text/event-stream");
+            response.addHeader(Header.CONTENT_TYPE.name(), "text/event-stream; charset=utf-8");
             response.addHeader(Header.CACHE_CONTROL.name(), "no-cache");
             response.addHeader(Header.CONNECTION.name(), "keep-alive");
             response.addHeader("X-Accel-Buffering", "no");

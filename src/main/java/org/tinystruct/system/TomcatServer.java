@@ -371,7 +371,7 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
                 String query = _request.getParameter("q");
                 if (query != null) {
                     Action.Mode mode = Action.Mode.fromName(request.getMethod());
-                    handleRequest(query, context, _response, mode);
+                    handleRequest(query, context, _request, _response, mode);
                 } else {
                     handleDefaultPage(context, _response);
                 }
@@ -451,13 +451,48 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
          * @param mode
          * @throws IOException if an I/O error occurs
          */
-        private void handleRequest(String query, org.tinystruct.application.Context context, Response<HttpServletResponse, ServletOutputStream> response, Action.Mode mode) throws IOException, ApplicationException {
+        private void handleRequest(String query, org.tinystruct.application.Context context, Request request, Response<HttpServletResponse, ServletOutputStream> response, Action.Mode mode) throws IOException, ApplicationException {
+            // Handle CORS preflight (OPTIONS) requests up-front: these have no body.
+            if ("OPTIONS".equalsIgnoreCase(request.method().name())) {
+                String origin = request.headers().get(Header.ORIGIN).toString();
+                String acrMethod = request.headers().get(Header.ACCESS_CONTROL_REQUEST_METHOD).toString();
+                String acrHeaders = request.headers().get(Header.ACCESS_CONTROL_REQUEST_HEADERS).toString();
+
+                // Allow origins: prefer explicit setting, otherwise echo Origin or wildcard
+                String allowOrigin = settings.getOrDefault("cors.allowed.origins", origin != null ? origin : "*");
+                response.addHeader("Access-Control-Allow-Origin", allowOrigin);
+                // Make responses vary by Origin when echoing it
+                if (origin != null) {
+                    response.addHeader("Vary", "Origin");
+                }
+
+                // Allow methods: prefer configured list, otherwise echo requested or use sensible defaults
+                String allowMethods = settings.getOrDefault("cors.allowed.methods", acrMethod != null ? acrMethod : "GET,POST,PUT,DELETE,OPTIONS");
+                response.addHeader("Access-Control-Allow-Methods", allowMethods);
+
+                // Allow headers: prefer configured list, otherwise echo requested or common headers
+                String allowHeaders = settings.getOrDefault("cors.allowed.headers", acrHeaders != null ? acrHeaders : "Content-Type,Authorization");
+                response.addHeader("Access-Control-Allow-Headers", allowHeaders);
+
+                // Allow credentials if explicitly enabled in settings
+                if ("true".equalsIgnoreCase(settings.get("cors.allow.credentials"))) {
+                    response.addHeader("Access-Control-Allow-Credentials", "true");
+                }
+
+                // Cache the preflight response for a configurable duration (seconds)
+                String maxAge = settings.getOrDefault("cors.preflight.maxage", "3600");
+                response.addHeader("Access-Control-Max-Age", maxAge);
+
+                // No response body for preflight; return 204 No Content
+                response.setStatus(ResponseStatus.NO_CONTENT);
+                return;
+            }
+
             // Handle request
             query = StringUtilities.htmlSpecialChars(query);
             Object message = ApplicationManager.call(query, context, mode);
             if (message != null) {
-                if (message instanceof byte[]) {
-                    byte[] bytes = (byte[]) message;
+                if (message instanceof byte[] bytes) {
                     response.addHeader(Header.CONTENT_LENGTH.name(), String.valueOf(bytes.length));
                     response.get().write(bytes);
                 } else {
@@ -518,7 +553,8 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
         }
 
         private String getProtocol(HttpServletRequest request) {
-            return isSSL() ? "https://" : "http://";
+            // Use the request object to determine the protocol
+            return request.isSecure() ? "https://" : "http://";
         }
 
         private String getHost(HttpServletRequest request) {

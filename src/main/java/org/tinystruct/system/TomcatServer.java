@@ -412,12 +412,11 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
                     SSEPushManager pushManager = getAppropriatePushManager(isMCP);
                     SSEClient client = pushManager.register(sessionId, response);
 
-                    if(call instanceof Builder) {
+                    if (call instanceof Builder) {
                         pushManager.push(sessionId, (Builder) call);
-                    }
-                    else if(call instanceof String) {
+                    } else if (call instanceof String) {
                         Builder builder = new Builder();
-                        builder.parse((String)call);
+                        builder.parse((String) call);
                         pushManager.push(sessionId, builder);
                     }
 
@@ -452,19 +451,25 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
          * @throws IOException if an I/O error occurs
          */
         private void handleRequest(String query, org.tinystruct.application.Context context, Request request, Response<HttpServletResponse, ServletOutputStream> response, Action.Mode mode) throws IOException, ApplicationException {
+            String origin = request.headers().get(Header.ORIGIN).toString();
+
+            // Allow origins: prefer explicit setting, otherwise echo Origin or wildcard
+            String allowOrigin = settings.getOrDefault("cors.allowed.origins", origin != null ? origin : "*");
+            response.addHeader("Access-Control-Allow-Origin", allowOrigin);
+            // Make responses vary by Origin when echoing it
+            if (origin != null) {
+                response.addHeader("Vary", "Origin");
+            }
+
+            // Allow credentials if explicitly enabled in settings
+            if ("true".equalsIgnoreCase(settings.get("cors.allow.credentials"))) {
+                response.addHeader("Access-Control-Allow-Credentials", "true");
+            }
+
             // Handle CORS preflight (OPTIONS) requests up-front: these have no body.
             if ("OPTIONS".equalsIgnoreCase(request.method().name())) {
-                String origin = request.headers().get(Header.ORIGIN).toString();
                 String acrMethod = request.headers().get(Header.ACCESS_CONTROL_REQUEST_METHOD).toString();
                 String acrHeaders = request.headers().get(Header.ACCESS_CONTROL_REQUEST_HEADERS).toString();
-
-                // Allow origins: prefer explicit setting, otherwise echo Origin or wildcard
-                String allowOrigin = settings.getOrDefault("cors.allowed.origins", origin != null ? origin : "*");
-                response.addHeader("Access-Control-Allow-Origin", allowOrigin);
-                // Make responses vary by Origin when echoing it
-                if (origin != null) {
-                    response.addHeader("Vary", "Origin");
-                }
 
                 // Allow methods: prefer configured list, otherwise echo requested or use sensible defaults
                 String allowMethods = settings.getOrDefault("cors.allowed.methods", acrMethod != null ? acrMethod : "GET,POST,PUT,DELETE,OPTIONS");
@@ -473,11 +478,6 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
                 // Allow headers: prefer configured list, otherwise echo requested or common headers
                 String allowHeaders = settings.getOrDefault("cors.allowed.headers", acrHeaders != null ? acrHeaders : "Content-Type,Authorization");
                 response.addHeader("Access-Control-Allow-Headers", allowHeaders);
-
-                // Allow credentials if explicitly enabled in settings
-                if ("true".equalsIgnoreCase(settings.get("cors.allow.credentials"))) {
-                    response.addHeader("Access-Control-Allow-Credentials", "true");
-                }
 
                 // Cache the preflight response for a configurable duration (seconds)
                 String maxAge = settings.getOrDefault("cors.preflight.maxage", "3600");

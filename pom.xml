@@ -6,7 +6,7 @@
     <name>tomcat server module</name>
     <groupId>org.tinystruct</groupId>
     <artifactId>tinystruct-tomcat-server</artifactId>
-    <version>1.0.6</version>
+    <version>1.0.7</version>
     <description>A tinystruct-based module to enable tomcat server support.</description>
     <url>https://tinystruct.org</url>
     <licenses>
@@ -27,12 +27,12 @@
     </developers>
     <properties>
         <java.version>17</java.version>
-        <jakarta.servlet.version>6.1.0</jakarta.servlet.version>
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <tomcat.embed.version>11.0.15</tomcat.embed.version>
-        <tinystruct.version>1.7.17</tinystruct.version>
+        <jakarta.servlet.version>6.1.0</jakarta.servlet.version>
+        <tomcat.embed.version>11.0.18</tomcat.embed.version>
+        <tinystruct.version>1.7.19</tinystruct.version>
         <jupiter.version>6.0.2</jupiter.version>
     </properties>
     <dependencies>
@@ -70,8 +70,8 @@
                         <arg>-Xlint:deprecation</arg>
                         <arg>-Xlint:unchecked</arg>
                     </compilerArgs>
-                    <source>17</source>
-                    <target>17</target>
+                    <source>${maven.compiler.source}</source>
+                    <target>${maven.compiler.target}</target>
                 </configuration>
             </plugin>
             <plugin>

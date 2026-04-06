@@ -20,6 +20,7 @@ import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.apache.catalina.*;
+import org.apache.catalina.connector.Connector;
 import org.apache.catalina.startup.ContextConfig;
 import org.apache.catalina.startup.Tomcat;
 import org.apache.juli.logging.Log;
@@ -120,7 +121,8 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
         tomcat.setPort(webPort);
         tomcat.setAddDefaultWebXmlToWebapp(false);
         tomcat.getConnector();
-
+        // Enable virtual threads for Tomcat request processing
+//      connector.getProtocolHandler().setExecutor(java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor());
         Host host = tomcat.getHost();
         host.setConfigClass(DefaultContextConfig.class.getName());
         host.setAutoDeploy(false);
@@ -441,6 +443,34 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
             }
         }
 
+        private String getAllowOrigin(String origin) {
+            // Get the configured allowed origins.
+            String allowedOrigins = settings.get("cors.allowed.origins");
+
+            if (allowedOrigins == null || allowedOrigins.trim().isEmpty()) {
+                return origin != null ? origin : "*";
+            }
+
+            if ("*".equals(allowedOrigins)) {
+                // If credentials are allowed, we MUST echo the origin instead of returning "*"
+                if ("true".equalsIgnoreCase(settings.get("cors.allow.credentials"))) {
+                    return origin != null ? origin : "*";
+                }
+                return "*";
+            }
+
+            if (origin != null) {
+                String[] origins = allowedOrigins.split(",");
+                for (String allowed : origins) {
+                    if (origin.equalsIgnoreCase(allowed.trim())) {
+                        return origin;
+                    }
+                }
+            }
+
+            return null;
+        }
+
         /**
          * Handles the HTTP request by processing the query.
          *
@@ -451,11 +481,14 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
          * @throws IOException if an I/O error occurs
          */
         private void handleRequest(String query, org.tinystruct.application.Context context, Request request, Response<HttpServletResponse, ServletOutputStream> response, Action.Mode mode) throws IOException, ApplicationException {
-            String origin = request.headers().get(Header.ORIGIN).toString();
+            Object originObj = request.headers().get(Header.ORIGIN);
+            String origin = originObj != null ? originObj.toString() : null;
 
-            // Allow origins: prefer explicit setting, otherwise echo Origin or wildcard
-            String allowOrigin = settings.getOrDefault("cors.allowed.origins", origin != null ? origin : "*");
-            response.addHeader("Access-Control-Allow-Origin", allowOrigin);
+            String allowOrigin = getAllowOrigin(origin);
+            if (allowOrigin != null && !allowOrigin.isEmpty()) {
+                response.addHeader("Access-Control-Allow-Origin", allowOrigin);
+            }
+
             // Make responses vary by Origin when echoing it
             if (origin != null) {
                 response.addHeader("Vary", "Origin");

@@ -62,6 +62,7 @@ public class ResponseBuilder extends ResponseWrapper<HttpServletResponse, Servle
         return this.response.getHeader(header);
     }
 
+    @Override
     public void addCookie(Cookie cookie) {
         addHeader(Header.SET_COOKIE.name(), cookie.toString());
     }

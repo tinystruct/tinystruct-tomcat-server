@@ -104,11 +104,7 @@ public class RequestBuilder extends RequestWrapper<HttpServletRequest, ServletIn
 
     @Override
     public Session getSession(String id, boolean generated) {
-        if (manager.getSession(id) == null && generated) {
-            manager.setSession(id, new MemorySession(id));
-        }
-
-        return manager.getSession(id);
+        return manager.getSession(id, generated);
     }
 
     @Override
@@ -338,4 +334,3 @@ public class RequestBuilder extends RequestWrapper<HttpServletRequest, ServletIn
         return cookies;
     }
 }
-

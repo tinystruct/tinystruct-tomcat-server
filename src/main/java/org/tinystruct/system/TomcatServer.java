@@ -587,7 +587,7 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
 
         private String getProtocol(HttpServletRequest request) {
             // Use the request object to determine the protocol
-            return request.isSecure() ? "https://" : "http://";
+            return request.isSecure() || isSSL() ? "https://" : "http://";
         }
 
         private String getHost(HttpServletRequest request) {

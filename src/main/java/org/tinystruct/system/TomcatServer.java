@@ -41,6 +41,10 @@ import org.tinystruct.mcp.MCPSpecification;
 import org.tinystruct.system.annotation.Action;
 import org.tinystruct.system.annotation.Argument;
 import org.tinystruct.system.util.StringUtilities;
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.Jws;
+import io.jsonwebtoken.JwtException;
+import org.tinystruct.http.security.JWTManager;
 
 import java.io.*;
 import java.nio.charset.Charset;
@@ -334,6 +338,13 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
             final org.tinystruct.application.Context context = new ApplicationContext();
             Request<HttpServletRequest, ServletInputStream> _request = new RequestBuilder(request, isSSL());
             Response<HttpServletResponse, ServletOutputStream> _response = new ResponseBuilder(response);
+
+            // Authenticate request
+            if (!authenticateRequest(_request, context)) {
+                sendErrorResponse(response, 401, "Invalid or expired token.");
+                return;
+            }
+
             try {
                 context.setId(_request.getSession().getId());
                 context.setAttribute(HTTP_REQUEST, _request);
@@ -471,6 +482,71 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
             return null;
         }
 
+        private boolean authenticateRequest(Request<?, ?> request, org.tinystruct.application.Context context) {
+            Object authorization;
+            if ((authorization = request.headers().get(Header.AUTHORIZATION)) != null) {
+                String authHeader = authorization.toString();
+                if (authHeader != null && authHeader.startsWith("Bearer ")) {
+                    String token = authHeader.substring(7);
+
+                    String secret = settings.get("jwt.secret");
+                    if (secret == null || secret.trim().isEmpty()) {
+                        // jwt.secret is not configured — cannot validate Bearer token.
+                        // Log a warning and reject the request to avoid using a weak/empty key.
+                        logger.warning("jwt.secret is not configured. " +
+                                "Bearer token authentication is disabled. " +
+                                "Please set jwt.secret (>= 256-bit) in application.properties.");
+                        return false;
+                    }
+
+                    JWTManager jwtManager = new JWTManager();
+                    jwtManager.withBase64Secret(secret);
+
+                    String timezone = settings.get("jwt.timezone");
+                    if (timezone != null && !timezone.trim().isEmpty()) {
+                        try {
+                            jwtManager.withTimezone(timezone);
+                        } catch (NumberFormatException e) {
+                            logger.warning("Invalid jwt.timezone value: " + timezone);
+                        }
+                    }
+
+                    try {
+                        Jws<Claims> claims = jwtManager.parseToken(token);
+                        context.setAttribute("CLAIMS", claims);
+                        return true;
+                    } catch (JwtException e) {
+                        // Log authentication failure
+                        logger.warning("JWT validation failed: " + e.getMessage());
+                        return false;
+                    }
+                }
+            }
+            return true; // Allow requests without a token
+        }
+
+        private void sendErrorResponse(HttpServletResponse response, int statusCode, String message) {
+            try {
+                String origin = response.getHeader("Origin");
+                String allowOrigin = getAllowOrigin(origin);
+                if (allowOrigin != null) {
+                    response.setHeader("Access-Control-Allow-Origin", allowOrigin);
+                }
+
+                if (origin != null) {
+                    response.setHeader("Vary", "Origin");
+                }
+
+                response.setStatus(statusCode);
+                response.setContentType("text/plain; charset=UTF-8");
+                try (PrintWriter writer = response.getWriter()) {
+                    writer.write(message != null ? message : "Unknown error");
+                }
+            } catch (IOException e) {
+                logger.log(Level.WARNING, "Error sending error response", e);
+            }
+        }
+
         /**
          * Handles the HTTP request by processing the query.
          *
@@ -505,7 +581,7 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
                 String acrHeaders = request.headers().get(Header.ACCESS_CONTROL_REQUEST_HEADERS).toString();
 
                 // Allow methods: prefer configured list, otherwise echo requested or use sensible defaults
-                String allowMethods = settings.getOrDefault("cors.allowed.methods", acrMethod != null ? acrMethod : "GET,POST,PUT,DELETE,OPTIONS");
+                String allowMethods = settings.getOrDefault("cors.allowed.methods", acrMethod != null ? acrMethod : "GET,POST,PUT,DELETE,OPTIONS,PATCH");
                 response.addHeader("Access-Control-Allow-Methods", allowMethods);
 
                 // Allow headers: prefer configured list, otherwise echo requested or common headers

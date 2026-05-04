@@ -420,7 +420,9 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
                         isMCP = true;
                     }
 
-                    Object call = ApplicationManager.call(query, context);
+                    Method method = request.method();
+                    Action.Mode mode = Action.Mode.fromName(method.name());
+                    Object call = ApplicationManager.call(query, context, mode);
                     String sessionId = context.getId();
                     SSEPushManager pushManager = getAppropriatePushManager(isMCP);
                     SSEClient client = pushManager.register(sessionId, response);

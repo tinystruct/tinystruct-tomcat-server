@@ -376,6 +376,47 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
                     }
                 }
 
+                Object originObj = _request.headers().get(Header.ORIGIN);
+                String origin = originObj != null ? originObj.toString() : null;
+
+                String allowOrigin = getAllowOrigin(origin);
+                if (allowOrigin != null && !allowOrigin.isEmpty()) {
+                    _response.addHeader("Access-Control-Allow-Origin", allowOrigin);
+                }
+
+                // Make responses vary by Origin when echoing it
+                if (origin != null) {
+                    _response.addHeader("Vary", "Origin");
+                }
+
+                // Allow credentials if explicitly enabled in settings
+                if ("true".equalsIgnoreCase(settings.get("cors.allow.credentials"))) {
+                    _response.addHeader("Access-Control-Allow-Credentials", "true");
+                }
+
+                // Handle CORS preflight (OPTIONS) requests up-front: these have no body.
+                if ("OPTIONS".equalsIgnoreCase(_request.method().name())) {
+                    String acrMethod = _request.headers().get(Header.ACCESS_CONTROL_REQUEST_METHOD).toString();
+                    String acrHeaders = _request.headers().get(Header.ACCESS_CONTROL_REQUEST_HEADERS).toString();
+
+                    // Allow methods: prefer configured list, otherwise echo requested or use sensible defaults
+                    String allowMethods = settings.getOrDefault("cors.allowed.methods", acrMethod != null ? acrMethod : "GET,POST,PUT,DELETE,OPTIONS,PATCH");
+                    _response.addHeader("Access-Control-Allow-Methods", allowMethods);
+
+                    // Allow headers: prefer configured list, otherwise echo requested or common headers
+                    String allowHeaders = settings.getOrDefault("cors.allowed.headers", acrHeaders != null ? acrHeaders : "Content-Type,Authorization");
+                    _response.addHeader("Access-Control-Allow-Headers", allowHeaders);
+
+                    // Cache the preflight response for a configurable duration (seconds)
+                    String maxAge = settings.getOrDefault("cors.preflight.maxage", "3600");
+                    _response.addHeader("Access-Control-Max-Age", maxAge);
+
+                    // No response body for preflight; return 204 No Content
+                    _response.setStatus(ResponseStatus.NO_CONTENT);
+
+                    return;
+                }
+
                 if (isSSE(request)) {
                     handleSSE(context, _request, _response);
                     return;
@@ -559,46 +600,6 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
          * @throws IOException if an I/O error occurs
          */
         private void handleRequest(String query, org.tinystruct.application.Context context, Request request, Response<HttpServletResponse, ServletOutputStream> response, Action.Mode mode) throws IOException, ApplicationException {
-            Object originObj = request.headers().get(Header.ORIGIN);
-            String origin = originObj != null ? originObj.toString() : null;
-
-            String allowOrigin = getAllowOrigin(origin);
-            if (allowOrigin != null && !allowOrigin.isEmpty()) {
-                response.addHeader("Access-Control-Allow-Origin", allowOrigin);
-            }
-
-            // Make responses vary by Origin when echoing it
-            if (origin != null) {
-                response.addHeader("Vary", "Origin");
-            }
-
-            // Allow credentials if explicitly enabled in settings
-            if ("true".equalsIgnoreCase(settings.get("cors.allow.credentials"))) {
-                response.addHeader("Access-Control-Allow-Credentials", "true");
-            }
-
-            // Handle CORS preflight (OPTIONS) requests up-front: these have no body.
-            if ("OPTIONS".equalsIgnoreCase(request.method().name())) {
-                String acrMethod = request.headers().get(Header.ACCESS_CONTROL_REQUEST_METHOD).toString();
-                String acrHeaders = request.headers().get(Header.ACCESS_CONTROL_REQUEST_HEADERS).toString();
-
-                // Allow methods: prefer configured list, otherwise echo requested or use sensible defaults
-                String allowMethods = settings.getOrDefault("cors.allowed.methods", acrMethod != null ? acrMethod : "GET,POST,PUT,DELETE,OPTIONS,PATCH");
-                response.addHeader("Access-Control-Allow-Methods", allowMethods);
-
-                // Allow headers: prefer configured list, otherwise echo requested or common headers
-                String allowHeaders = settings.getOrDefault("cors.allowed.headers", acrHeaders != null ? acrHeaders : "Content-Type,Authorization");
-                response.addHeader("Access-Control-Allow-Headers", allowHeaders);
-
-                // Cache the preflight response for a configurable duration (seconds)
-                String maxAge = settings.getOrDefault("cors.preflight.maxage", "3600");
-                response.addHeader("Access-Control-Max-Age", maxAge);
-
-                // No response body for preflight; return 204 No Content
-                response.setStatus(ResponseStatus.NO_CONTENT);
-                return;
-            }
-
             // Handle request
             query = StringUtilities.htmlSpecialChars(query);
             Object message = ApplicationManager.call(query, context, mode);

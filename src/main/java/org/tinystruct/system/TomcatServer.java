@@ -20,7 +20,6 @@ import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.apache.catalina.*;
-import org.apache.catalina.connector.Connector;
 import org.apache.catalina.startup.ContextConfig;
 import org.apache.catalina.startup.Tomcat;
 import org.apache.juli.logging.Log;
@@ -341,7 +340,7 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
 
             // Authenticate request
             if (!authenticateRequest(_request, context)) {
-                sendErrorResponse(response, 401, "Invalid or expired token.");
+                sendErrorResponse(request, response, 401, "Invalid or expired token.");
                 return;
             }
 
@@ -466,7 +465,7 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
                     Object call = ApplicationManager.call(query, context, mode);
                     String sessionId = context.getId();
                     SSEPushManager pushManager = getAppropriatePushManager(isMCP);
-                    SSEClient client = pushManager.register(sessionId, response);
+                    pushManager.register(sessionId, response);
 
                     if (call instanceof Builder) {
                         pushManager.push(sessionId, (Builder) call);
@@ -474,22 +473,6 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
                         Builder builder = new Builder();
                         builder.parse((String) call);
                         pushManager.push(sessionId, builder);
-                    }
-
-                    if (client != null) {
-                        try {
-                            while (client.isActive()) {
-                                Thread.sleep(1000);
-                            }
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            throw new ApplicationException("Stream interrupted: " + e.getMessage(), e);
-                        } catch (Exception e) {
-                            throw new ApplicationException("Error in stream: " + e.getMessage(), e);
-                        } finally {
-                            client.close();
-                            pushManager.remove(sessionId);
-                        }
                     }
                 }
             } catch (ApplicationException e) {
@@ -568,16 +551,19 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
             return true; // Allow requests without a token
         }
 
-        private void sendErrorResponse(HttpServletResponse response, int statusCode, String message) {
+        private void sendErrorResponse(HttpServletRequest request, HttpServletResponse response, int statusCode, String message) {
             try {
-                String origin = response.getHeader("Origin");
-                String allowOrigin = getAllowOrigin(origin);
-                if (allowOrigin != null) {
-                    response.setHeader("Access-Control-Allow-Origin", allowOrigin);
-                }
+                String origin = null;
+                if (request.getHeader(Header.ORIGIN.name()) != null)
+                    origin = request.getHeader(Header.ORIGIN.name());
 
                 if (origin != null) {
                     response.setHeader("Vary", "Origin");
+
+                    String allowOrigin = getAllowOrigin(origin);
+                    if (allowOrigin != null) {
+                        response.setHeader("Access-Control-Allow-Origin", allowOrigin);
+                    }
                 }
 
                 response.setStatus(statusCode);

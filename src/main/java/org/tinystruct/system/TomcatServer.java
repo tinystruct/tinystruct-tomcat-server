@@ -393,6 +393,10 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
                     _response.addHeader("Access-Control-Allow-Credentials", "true");
                 }
 
+                // Expose specific headers for clients to read (e.g. MCP session ID)
+                String exposeHeaders = settings.getOrDefault("cors.exposed.headers", MCPSpecification.Http.SESSION_ID + "," + MCPSpecification.Http.CONVERSATION_ID);
+                _response.addHeader("Access-Control-Expose-Headers", exposeHeaders);
+
                 // Handle CORS preflight (OPTIONS) requests up-front: these have no body.
                 if ("OPTIONS".equalsIgnoreCase(_request.method().name())) {
                     String acrMethod = _request.headers().get(Header.ACCESS_CONTROL_REQUEST_METHOD).toString();

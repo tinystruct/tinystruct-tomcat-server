@@ -99,6 +99,10 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
         // The port that we should run on can be set into an environment variable
         // Look for that variable and default to 8080 if it isn't there.
         int webPort = 8080;
+        if (settings.get("server.port") != null) {
+            webPort = Integer.parseInt(settings.get("server.port"));
+        }
+
         if (getContext() != null) {
             if (getContext().getAttribute("--http.proxyHost") != null && getContext().getAttribute("--http.proxyPort") != null) {
                 System.setProperty("http.proxyHost", getContext().getAttribute("--http.proxyHost").toString());

@@ -424,6 +424,26 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
                     return;
                 }
 
+                // Enforce server name restriction if configured
+                String configuredServerName = settings.get("server.name");
+                if (configuredServerName != null && !configuredServerName.trim().isEmpty()) {
+                    String hostHeader = request.getHeader("Host");
+                    boolean hostAllowed = false;
+                    if (hostHeader != null) {
+                        for (String allowed : configuredServerName.split(",")) {
+                            if (hostHeader.equalsIgnoreCase(allowed.trim())) {
+                                hostAllowed = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!hostAllowed) {
+                        logger.warning("Rejected request: Host header '" + hostHeader + "' does not match any configured server.name '" + configuredServerName.trim() + "'");
+                        sendErrorResponse(request, response, 400, "Bad Request: Invalid server name.");
+                        return;
+                    }
+                }
+
                 if (isSSE(request)) {
                     handleSSE(context, _request, _response);
                     return;

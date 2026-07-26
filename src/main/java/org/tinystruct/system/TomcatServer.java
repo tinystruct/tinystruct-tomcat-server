@@ -99,7 +99,7 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
         // The port that we should run on can be set into an environment variable
         // Look for that variable and default to 8080 if it isn't there.
         int webPort = 8080;
-        if (settings.get("server.port") != null) {
+        if (settings.get("server.port") != null && !settings.get("server.port").trim().isEmpty()) {
             webPort = Integer.parseInt(settings.get("server.port"));
         }
 
@@ -114,7 +114,7 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
                 System.setProperty("https.proxyPort", getContext().getAttribute("--https.proxyPort").toString());
             }
 
-            if (getContext().getAttribute("--server-port") != null) {
+            if (getContext().getAttribute("--server-port") != null && !getContext().getAttribute("--server-port").toString().trim().isEmpty()) {
                 webPort = Integer.parseInt(getContext().getAttribute("--server-port").toString());
             }
         }
@@ -422,6 +422,26 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
                     _response.setStatus(ResponseStatus.NO_CONTENT);
 
                     return;
+                }
+
+                // Enforce server name restriction if configured
+                String configuredServerName = settings.get("server.name");
+                if (configuredServerName != null && !configuredServerName.trim().isEmpty()) {
+                    String hostHeader = request.getHeader("Host");
+                    boolean hostAllowed = false;
+                    if (hostHeader != null) {
+                        for (String allowed : configuredServerName.split(",")) {
+                            if (hostHeader.equalsIgnoreCase(allowed.trim())) {
+                                hostAllowed = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!hostAllowed) {
+                        logger.warning("Rejected request: Host header '" + hostHeader + "' does not match any configured server.name '" + configuredServerName.trim() + "'");
+                        sendErrorResponse(request, response, 400, "Bad Request: Invalid server name.");
+                        return;
+                    }
                 }
 
                 if (isSSE(request)) {

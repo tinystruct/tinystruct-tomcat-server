@@ -357,14 +357,14 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
                 }
                 if (!hostAllowed) {
                     logger.warning("Rejected request: Host header '" + hostHeader + "' does not match any configured server.name '" + configuredServerName.trim() + "'");
-                    sendErrorResponse(request, response, 400, "Bad Request: Invalid server name.");
+                    sendErrorResponse(_request, _response, ResponseStatus.BAD_REQUEST, "Bad Request: Invalid server name.");
                     return;
                 }
             }
 
             // Authenticate request
             if (!authenticateRequest(_request, context)) {
-                sendErrorResponse(request, response, 401, "Invalid or expired token.");
+                sendErrorResponse(_request, _response, ResponseStatus.UNAUTHORIZED, "Invalid or expired token.");
                 return;
             }
 
@@ -579,27 +579,23 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
             return true; // Allow requests without a token
         }
 
-        private void sendErrorResponse(HttpServletRequest request, HttpServletResponse response, int statusCode, String message) {
+        private void sendErrorResponse(Request<?, ?> request, Response<HttpServletResponse, ServletOutputStream> response, ResponseStatus status, String message) {
             try {
-                String origin = null;
-                if (request.getHeader(Header.ORIGIN.name()) != null)
-                    origin = request.getHeader(Header.ORIGIN.name());
-
-                if (origin != null) {
-                    response.setHeader("Vary", "Origin");
-
+                Object originObj = request.headers().get(Header.ORIGIN);
+                if (originObj != null) {
+                    String origin = originObj.toString();
+                    response.addHeader("Vary", "Origin");
                     String allowOrigin = getAllowOrigin(origin);
                     if (allowOrigin != null) {
-                        response.setHeader("Access-Control-Allow-Origin", allowOrigin);
+                        response.addHeader("Access-Control-Allow-Origin", allowOrigin);
                     }
                 }
 
-                response.setStatus(statusCode);
-                response.setContentType("text/plain; charset=UTF-8");
-                try (PrintWriter writer = response.getWriter()) {
-                    writer.write(message != null ? message : "Unknown error");
-                }
-            } catch (IOException e) {
+                response.setStatus(status);
+                response.addHeader(Header.CONTENT_TYPE.name(), "text/plain; charset=UTF-8");
+                byte[] body = (message != null ? message : "Unknown error").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                response.writeAndFlush(body);
+            } catch (ApplicationException e) {
                 logger.log(Level.WARNING, "Error sending error response", e);
             }
         }

@@ -20,6 +20,7 @@ import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.apache.catalina.*;
+import org.apache.catalina.connector.Connector;
 import org.apache.catalina.startup.ContextConfig;
 import org.apache.catalina.startup.Tomcat;
 import org.apache.juli.logging.Log;
@@ -57,6 +58,7 @@ import static org.tinystruct.http.Constants.*;
 public class TomcatServer extends AbstractApplication implements Bootstrap {
     private final Logger logger = Logger.getLogger(TomcatServer.class.getName());
     private boolean started = false;
+    private Tomcat tomcat;
 
     public TomcatServer() {
     }
@@ -93,7 +95,10 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
             // Initialize the application manager with the configuration.
             ApplicationManager.init(settings);
         } catch (ApplicationException e) {
-            logger.log(Level.SEVERE, e.getMessage(), e);
+            // Startup cannot proceed without a working ApplicationManager - fail fast
+            // instead of continuing with a half-initialized application context.
+            logger.log(Level.SEVERE, "Failed to initialize ApplicationManager", e);
+            throw new ApplicationException("Failed to initialize ApplicationManager: " + e.getMessage(), e.getCause());
         }
 
         // The port that we should run on can be set into an environment variable
@@ -123,13 +128,17 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
 
         final long start = System.currentTimeMillis();
         final String webappDirLocation = ".";
-        final Tomcat tomcat = new Tomcat();
+        this.tomcat = new Tomcat();
 
         tomcat.setPort(webPort);
         tomcat.setAddDefaultWebXmlToWebapp(false);
-        tomcat.getConnector();
-        // Enable virtual threads for Tomcat request processing
-//      connector.getProtocolHandler().setExecutor(java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor());
+        // getConnector() is required here: Tomcat only creates its default connector
+        // lazily, the first time getConnector() is called - without this call, start()
+        // below would launch a server with no connector listening on any port.
+        Connector connector = tomcat.getConnector();
+        connector.setPort(webPort);
+        // To enable virtual threads for request processing, uncomment:
+        // connector.getProtocolHandler().setExecutor(Executors.newVirtualThreadPerTaskExecutor());
         Host host = tomcat.getHost();
         host.setConfigClass(DefaultContextConfig.class.getName());
         host.setAutoDeploy(false);
@@ -146,6 +155,7 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
             FilterDef filterDef = new FilterDef();
             filterDef.setFilterClass(filterClass.getName());
             filterDef.setFilterName(filterClass.getSimpleName());
+            filterDef.setAsyncSupported("true");
             ctx.addFilterDef(filterDef);
 
             FilterMap filterMap = new FilterMap();
@@ -195,6 +205,17 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
 
     @Override
     public void stop() {
+        if (tomcat != null) {
+            try {
+                tomcat.stop();
+                tomcat.destroy();
+            } catch (LifecycleException e) {
+                logger.log(Level.WARNING, "Failed to stop Tomcat", e);
+            } finally {
+                started = false;
+                tomcat = null;
+            }
+        }
     }
 
     @Action(value = "error", description = "Error page", mode = Action.Mode.HTTP_GET)
@@ -209,7 +230,8 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
         if (session.getAttribute("error") != null) {
             ApplicationException exception = (ApplicationException) session.getAttribute("error");
 
-            String message = exception.getRootCause().getMessage();
+            Throwable rootCause = exception.getRootCause();
+            String message = rootCause != null ? rootCause.getMessage() : exception.getMessage();
             this.setVariable("exception.message", Objects.requireNonNullElse(message, "Unknown error"));
 
             StackTraceElement[] stackTrace = exception.getStackTrace();
@@ -302,8 +324,11 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
         private static final String DATE_FORMAT_PATTERN = "yyyy-M-d h:m:s";
         private static final SimpleDateFormat format = new SimpleDateFormat(DATE_FORMAT_PATTERN);
         private String charsetName;
+        private Charset writerCharset;
         private Configuration<String> settings;
         private String path;
+        private volatile boolean sseManagerUsed;
+        private volatile boolean mcpManagerUsed;
 
         @Override
         public void init(ServletConfig config) {
@@ -332,7 +357,9 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
         @Override
         public void service(HttpServletRequest request, HttpServletResponse response) throws IOException {
             request.setCharacterEncoding(charsetName);
-            response.setContentType("text/html;charset=" + charsetName);
+            if (!isSSE(request)) {
+                response.setContentType("text/html;charset=" + charsetName);
+            }
             response.setCharacterEncoding(charsetName);
             response.setHeader("Pragma", "No-cache");
             response.setHeader("Cache-Control", "No-cache");
@@ -423,8 +450,10 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
 
                 // Handle CORS preflight (OPTIONS) requests up-front: these have no body.
                 if ("OPTIONS".equalsIgnoreCase(_request.method().name())) {
-                    String acrMethod = _request.headers().get(Header.ACCESS_CONTROL_REQUEST_METHOD).toString();
-                    String acrHeaders = _request.headers().get(Header.ACCESS_CONTROL_REQUEST_HEADERS).toString();
+                    Object requestedMethod = _request.headers().get(Header.ACCESS_CONTROL_REQUEST_METHOD);
+                    Object requestedHeaders = _request.headers().get(Header.ACCESS_CONTROL_REQUEST_HEADERS);
+                    String acrMethod = requestedMethod != null ? requestedMethod.toString() : null;
+                    String acrHeaders = requestedHeaders != null ? requestedHeaders.toString() : null;
 
                     // Allow methods: prefer configured list, otherwise echo requested or use sensible defaults
                     String allowMethods = settings.getOrDefault("cors.allowed.methods", acrMethod != null ? acrMethod : "GET,POST,PUT,DELETE,OPTIONS,PATCH");
@@ -445,7 +474,7 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
                 }
 
                 if (isSSE(request)) {
-                    handleSSE(context, _request, _response);
+                    handleSSE(context, request, response, _request, _response);
                     return;
                 }
 
@@ -472,12 +501,21 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
             return isMCP ? MCPPushManager.getInstance() : SSEPushManager.getInstance();
         }
 
-        private void handleSSE(org.tinystruct.application.Context context, Request<HttpServletRequest, ServletInputStream> request,
+        private void handleSSE(org.tinystruct.application.Context context, HttpServletRequest _request,
+                               HttpServletResponse _response,
+                               Request<HttpServletRequest, ServletInputStream> request,
                                Response<HttpServletResponse, ServletOutputStream> response) throws IOException {
             response.addHeader(Header.CONTENT_TYPE.name(), "text/event-stream; charset=utf-8");
             response.addHeader(Header.CACHE_CONTROL.name(), "no-cache");
             response.addHeader(Header.CONNECTION.name(), "keep-alive");
             response.addHeader("X-Accel-Buffering", "no");
+
+            // Switch the servlet to async mode BEFORE calling any application code that
+            // may enqueue messages.  Without this, Tomcat commits and closes the response
+            // as soon as this method returns, so the SSEClient background thread would be
+            // writing to an already-closed stream and every message would be lost.
+            jakarta.servlet.AsyncContext asyncContext = _request.startAsync();
+            asyncContext.setTimeout(0); // No timeout — SSE connections are long-lived.
 
             try {
                 String query = request.getParameter("q");
@@ -492,8 +530,14 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
                     Action.Mode mode = Action.Mode.fromName(method.name());
                     Object call = ApplicationManager.call(query, context, mode);
                     String sessionId = context.getId();
+                    if (isMCP) {
+                        mcpManagerUsed = true;
+                    } else {
+                        sseManagerUsed = true;
+                    }
                     SSEPushManager pushManager = getAppropriatePushManager(isMCP);
-                    pushManager.register(sessionId, response);
+                    response.setStatus(ResponseStatus.OK);
+                    Object registration = pushManager.register(sessionId, response);
 
                     if (call instanceof Builder) {
                         pushManager.push(sessionId, (Builder) call);
@@ -502,9 +546,58 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
                         builder.parse((String) call);
                         pushManager.push(sessionId, builder);
                     }
+
+                    if (registration instanceof SSEClient sseClient) {
+                        // The SSEClient thread drives the connection. We must complete the
+                        // AsyncContext once it finishes (disconnect / broken pipe / shutdown).
+                        // We submit a small wrapper on the same executor so it does not block
+                        // the servlet thread-pool at all.
+                        final jakarta.servlet.AsyncContext ac = asyncContext;
+                        asyncContext.start(() -> {
+                            try {
+                                // Wait for the SSEClient worker to finish.
+                                while (sseClient.isActive()) {
+                                    Thread.sleep(500);
+                                }
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                logger.warning("SSE async watcher interrupted for session: " + sessionId);
+                            } finally {
+                                try {
+                                    ac.complete();
+                                } catch (Exception ignore) {
+                                    // AsyncContext may already be completed on disconnect
+                                }
+                                logger.fine("SSE async context completed for session: " + sessionId);
+                            }
+                        });
+                    } else {
+                        // No SSEClient was registered (e.g. session already active);
+                        // complete immediately so the connection is not leaked.
+                        asyncContext.complete();
+                    }
+                } else {
+                    asyncContext.complete();
                 }
             } catch (ApplicationException e) {
-                throw new RuntimeException(e);
+                try {
+                    if (!_response.isCommitted()) {
+                        _response.resetBuffer();
+                        _response.setStatus(ResponseStatus.INTERNAL_SERVER_ERROR.code());
+                        _response.setContentType("text/plain");
+                        _response.setCharacterEncoding("UTF-8");
+                        _response.getWriter().write("SSE request failed");
+                    }
+                } catch (Exception ignore) {
+                    // ignore
+                } finally {
+                    try {
+                        asyncContext.complete();
+                    } catch (Exception ignore) {
+                        // ignore
+                    }
+                }
+                logger.log(Level.WARNING, "SSE request failed", e);
             }
         }
 
@@ -656,7 +749,7 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
             if (!Boolean.parseBoolean(settings.get("default.error.process"))) {
                 String defaultErrorPage = settings.get("default.error.page");
                 Reforward forward = new Reforward(request, response);
-                forward.setDefault(defaultErrorPage.trim().isEmpty() ? "/?q=error" : "/?q=" + defaultErrorPage);
+                forward.setDefault(defaultErrorPage == null || defaultErrorPage.trim().isEmpty() ? "/?q=error" : "/?q=" + defaultErrorPage.trim());
                 forward.forward();
             }
         }
@@ -665,7 +758,8 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
         public void start() throws ApplicationException {
             settings = new Settings();
             charsetName = settings.getOrDefault("default.file.encoding", Charset.defaultCharset().name());
-            settings.set("language", "zh_CN");
+            writerCharset = Charset.forName(charsetName);
+            settings.setIfAbsent("language", "zh_CN");
             settings.setIfAbsent("system.directory", path);
         }
 
@@ -698,11 +792,17 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
          * @return BufferedWriter
          */
         private BufferedWriter getWriter(OutputStream out) {
-            return new BufferedWriter(new OutputStreamWriter(out, Charset.forName(charsetName)));
+            return new BufferedWriter(new OutputStreamWriter(out, writerCharset));
         }
 
         @Override
         public void stop() {
+            if (sseManagerUsed) {
+                SSEPushManager.getInstance().shutdown();
+            }
+            if (mcpManagerUsed) {
+                MCPPushManager.getInstance().shutdown();
+            }
             System.out.println("Stopping...");
         }
 
@@ -710,6 +810,10 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
         public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws IOException, ServletException {
             final HttpServletRequest req = (HttpServletRequest) request;
             final HttpServletResponse resp = (HttpServletResponse) response;
+            if (isSSE(req)) {
+                this.service(req, resp);
+                return;
+            }
             final long now = System.currentTimeMillis();
             resp.addHeader("Cache-Control", "public, max-age=86400, must-revalidate");
             resp.setDateHeader("Expires", now + 86400000L);
@@ -717,12 +821,21 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
             // Process the static files in the project
             String uri = req.getRequestURI().replaceAll("^/+", "");
             if (uri.length() > 1) {
+                // Decode percent-encoded characters BEFORE slicing out the first path
+                // segment, otherwise an encoded '/' or '.' has no effect on which
+                // segment gets checked below (the decode used to run after the slice).
+                uri = uri.replaceAll("(?i)%2e", ".")
+                        .replaceAll("(?i)%2f", "/")
+                        .replaceAll("(?i)%5c", "/");
+
                 if (uri.indexOf('/') != -1)
                     uri = uri.substring(0, uri.indexOf("/"));
 
-                uri = uri.replace("%2e", ".");
-                uri = uri.replace("%2f", "/");
-                uri = uri.replace("%5c", "/");
+                // Reject any segment that could escape the current directory.
+                if (uri.equals("..") || uri.equals(".") || uri.contains("..")) {
+                    this.service(req, resp);
+                    return;
+                }
 
                 File resource = new File(uri);
                 if (resource.exists()) {

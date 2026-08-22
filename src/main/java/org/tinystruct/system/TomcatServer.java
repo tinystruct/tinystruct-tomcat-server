@@ -36,8 +36,7 @@ import org.tinystruct.http.Reforward;
 import org.tinystruct.http.Session;
 import org.tinystruct.http.servlet.RequestBuilder;
 import org.tinystruct.http.servlet.ResponseBuilder;
-import org.tinystruct.mcp.MCPPushManager;
-import org.tinystruct.mcp.MCPSpecification;
+
 import org.tinystruct.system.annotation.Action;
 import org.tinystruct.system.annotation.Argument;
 import org.tinystruct.system.util.StringUtilities;
@@ -327,8 +326,7 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
         private Charset writerCharset;
         private Configuration<String> settings;
         private String path;
-        private volatile boolean sseManagerUsed;
-        private volatile boolean mcpManagerUsed;
+
 
         @Override
         public void init(ServletConfig config) {
@@ -444,8 +442,8 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
                     _response.addHeader("Access-Control-Allow-Credentials", "true");
                 }
 
-                // Expose specific headers for clients to read (e.g. MCP session ID)
-                String exposeHeaders = settings.getOrDefault("cors.exposed.headers", MCPSpecification.Http.SESSION_ID + "," + MCPSpecification.Http.CONVERSATION_ID);
+                // Expose specific response headers for clients to read (configure via cors.exposed.headers)
+                String exposeHeaders = settings.getOrDefault("cors.exposed.headers", "");
                 _response.addHeader("Access-Control-Expose-Headers", exposeHeaders);
 
                 // Handle CORS preflight (OPTIONS) requests up-front: these have no body.
@@ -494,12 +492,7 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
             }
         }
 
-        /**
-         * Helper to select the appropriate push manager based on isMCP flag.
-         */
-        private SSEPushManager getAppropriatePushManager(boolean isMCP) {
-            return isMCP ? MCPPushManager.getInstance() : SSEPushManager.getInstance();
-        }
+
 
         private void handleSSE(org.tinystruct.application.Context context, HttpServletRequest _request,
                                HttpServletResponse _response,
@@ -519,23 +512,17 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
 
             try {
                 String query = request.getParameter("q");
-                boolean isMCP = false;
                 if (query != null) {
                     query = StringUtilities.htmlSpecialChars(query);
-                    if (query.equals(MCPSpecification.Endpoints.SSE)) {
-                        isMCP = true;
-                    }
 
                     Method method = request.method();
                     Action.Mode mode = Action.Mode.fromName(method.name());
                     Object call = ApplicationManager.call(query, context, mode);
                     String sessionId = context.getId();
-                    if (isMCP) {
-                        mcpManagerUsed = true;
-                    } else {
-                        sseManagerUsed = true;
-                    }
-                    SSEPushManager pushManager = getAppropriatePushManager(isMCP);
+                    Object pmAttr = context.getAttribute("sse.push.manager");
+                    SSEPushManager pushManager = (pmAttr instanceof SSEPushManager)
+                            ? (SSEPushManager) pmAttr
+                            : SSEPushManager.getInstance();
                     response.setStatus(ResponseStatus.OK);
                     Object registration = pushManager.register(sessionId, response);
 
@@ -797,12 +784,7 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
 
         @Override
         public void stop() {
-            if (sseManagerUsed) {
-                SSEPushManager.getInstance().shutdown();
-            }
-            if (mcpManagerUsed) {
-                MCPPushManager.getInstance().shutdown();
-            }
+            SSEPushManager.getInstance().shutdown();
             System.out.println("Stopping...");
         }
 

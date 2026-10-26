@@ -23,6 +23,8 @@ import org.apache.catalina.*;
 import org.apache.catalina.connector.Connector;
 import org.apache.catalina.startup.ContextConfig;
 import org.apache.catalina.startup.Tomcat;
+import org.apache.catalina.webresources.DirResourceSet;
+import org.apache.catalina.webresources.StandardRoot;
 import org.apache.juli.logging.Log;
 import org.apache.juli.logging.LogFactory;
 import org.apache.tomcat.util.descriptor.web.FilterDef;
@@ -47,7 +49,13 @@ import org.tinystruct.http.security.JWTManager;
 
 import java.io.*;
 import java.nio.charset.Charset;
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -126,7 +134,6 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
         System.out.println(ApplicationManager.call("--logo", null, Action.Mode.CLI));
 
         final long start = System.currentTimeMillis();
-        final String webappDirLocation = ".";
         this.tomcat = new Tomcat();
 
         tomcat.setPort(webPort);
@@ -144,11 +151,36 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
         try {
             LifecycleListener config = new DefaultContextConfig();
 
-            String docBase = new File(webappDirLocation).getAbsolutePath();
+            // SECURITY: the docBase is what DefaultServlet exposes. It must never be the project root,
+            // otherwise sources, .git and application.properties (credentials) become downloadable.
+            String staticDirConfig = settings.get("server.static.dirs");
+            if (staticDirConfig == null || staticDirConfig.trim().isEmpty()) {
+                staticDirConfig = settings.getOrDefault("server.static.dir", "static");
+            }
+            List<String> staticDirList = resolveStaticDirs(staticDirConfig);
+            String docBase = !staticDirList.isEmpty() ? staticDirList.get(0) : resolveDocBase("static");
             Context ctx = tomcat.addWebapp(host, "", docBase, config);
             initWebappDefaults(ctx);
 
-            logger.info("Configuring app with basedir: " + docBase);
+            if (!staticDirList.isEmpty()) {
+                // Every directory is served at the root and also under its own path (e.g. ./themes at /themes),
+                // so existing folders can stay where they are.
+                Path workDir = Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
+                StandardRoot resources = new StandardRoot(ctx);
+                for (int i = 0; i < staticDirList.size(); i++) {
+                    String dir = staticDirList.get(i);
+                    if (i > 0) {
+                        resources.addPostResources(new DirResourceSet(resources, "/", dir, "/"));
+                    }
+                    String mount = workDir.relativize(Paths.get(dir)).toString().replace('\\', '/');
+                    if (!mount.isEmpty()) {
+                        resources.addPostResources(new DirResourceSet(resources, "/" + mount, dir, "/"));
+                    }
+                }
+                ctx.setResources(resources);
+            }
+
+            logger.info("Configuring app with static docBase: " + docBase);
 
             Class<?> filterClass = DefaultHandler.class;
             FilterDef filterDef = new FilterDef();
@@ -159,7 +191,9 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
 
             FilterMap filterMap = new FilterMap();
             filterMap.setFilterName(filterClass.getSimpleName());
-            filterMap.addURLPattern("/");
+            // "/*" (not "/"): for filters, "/" only matches the root path exactly, which let every
+            // other request bypass this filter and hit DefaultServlet directly.
+            filterMap.addURLPattern("/*");
             ctx.addFilterMap(filterMap);
 
             tomcat.start();
@@ -189,6 +223,8 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
         // Default servlet
         Wrapper servlet = Tomcat.addServlet(
                 ctx, "default", "org.apache.catalina.servlets.DefaultServlet");
+        servlet.addInitParameter("listings", "false");
+        servlet.addInitParameter("readonly", "true");
         servlet.setLoadOnStartup(1);
         servlet.setOverridable(true);
 
@@ -200,6 +236,103 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
 
         // MIME type mappings
         Tomcat.addDefaultMimeTypeMappings(ctx);
+    }
+
+    /**
+     * Returns the directory to be used as docBase: the configured static directory if it exists and is a
+     * proper sub-directory of the working directory, otherwise an empty temporary directory so that
+     * nothing at all is served statically.
+     */
+    private String resolveDocBase(String staticDir) throws LifecycleException {
+        Path workDir = Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
+        Path base = workDir.resolve(staticDir).toAbsolutePath().normalize();
+        if (workDir.startsWith(base)) {
+            logger.warning("server.static.dir must be a sub-directory of the working directory; static file serving is disabled.");
+        } else if (Files.isDirectory(base)) {
+            return base.toString();
+        }
+
+        try {
+            Path empty = Files.createTempDirectory("tinystruct-docbase");
+            empty.toFile().deleteOnExit();
+            return empty.toString();
+        } catch (IOException e) {
+            throw new LifecycleException("Unable to create an empty docBase: " + e.getMessage(), e);
+        }
+    }
+
+    private List<String> resolveStaticDirs(String staticDirsConfig) {
+        Path workDir = Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
+        String[] dirs = staticDirsConfig.split("[,;]");
+        List<String> list = new ArrayList<>(dirs.length);
+        for (String dir : dirs) {
+            dir = dir.trim();
+            if (dir.isEmpty()) continue;
+            Path base = workDir.resolve(dir).toAbsolutePath().normalize();
+            if (workDir.startsWith(base)) {
+                logger.warning("server.static.dir must be a sub-directory of the working directory; static file serving is disabled for: " + dir);
+            } else if (Files.isDirectory(base)) {
+                list.add(base.toString());
+            }
+        }
+        return list;
+    }
+
+    /**
+     * Resolves a decoded request path to a regular file inside one of {@code baseDirs}, or returns {@code null}.
+     * Hidden entries, WEB-INF/META-INF, Windows aliases and symlinks escaping the directory are rejected.
+     */
+    static Path resolveStaticFile(List<Path> baseDirs, String decoded) {
+        if (baseDirs == null || baseDirs.isEmpty() || decoded == null || decoded.isEmpty() || decoded.charAt(0) != '/' || decoded.length() > 2048) {
+            return null;
+        }
+        String relative = decoded.substring(1).replace('\\', '/');
+        // ':' covers drive letters and NTFS alternate data streams (file::$DATA)
+        if (relative.isEmpty() || relative.indexOf('\0') >= 0 || relative.indexOf(':') >= 0) {
+            return null;
+        }
+        for (Path baseDir : baseDirs) {
+            for (Path root : new Path[]{baseDir, Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize()}) {
+                Path requested;
+                try {
+                    requested = root.resolve(relative).normalize();
+                } catch (InvalidPathException e) {
+                    continue;
+                }
+                if (!requested.startsWith(baseDir) || requested.equals(baseDir)) {
+                    continue;
+                }
+                Path relativePath = baseDir.relativize(requested);
+                String first = relativePath.getName(0).toString();
+                if (first.equalsIgnoreCase("WEB-INF") || first.equalsIgnoreCase("META-INF")) {
+                    continue;
+                }
+                boolean invalid = false;
+                for (Path part : relativePath) {
+                    String name = part.toString();
+                    // Never serve hidden files or folders (.git, .env, ...), and reject Windows
+                    // trailing dot/space aliases ("secret.txt." resolves to "secret.txt").
+                    if (name.startsWith(".") || name.endsWith(".") || name.endsWith(" ")) {
+                        invalid = true;
+                        break;
+                    }
+                }
+                if (invalid) {
+                    continue;
+                }
+                try {
+                    if (Files.isRegularFile(requested) && requested.toRealPath().startsWith(baseDir.toRealPath())) {
+                        return requested;
+                    }
+                } catch (IOException ignored) {
+                }
+            }
+        }
+        return null;
+    }
+
+    static Path resolveStaticFile(Path baseDir, String decoded) {
+        return resolveStaticFile(baseDir != null ? List.of(baseDir) : List.of(), decoded);
     }
 
     @Override
@@ -804,37 +937,89 @@ public class TomcatServer extends AbstractApplication implements Bootstrap {
                 this.service(req, resp);
                 return;
             }
-            final long now = System.currentTimeMillis();
-            resp.addHeader("Cache-Control", "public, max-age=86400, must-revalidate");
-            resp.setDateHeader("Expires", now + 86400000L);
 
-            // Process the static files in the project
-            String uri = req.getRequestURI().replaceAll("^/+", "");
-            if (uri.length() > 1) {
-                // Decode percent-encoded characters BEFORE slicing out the first path
-                // segment, otherwise an encoded '/' or '.' has no effect on which
-                // segment gets checked below (the decode used to run after the slice).
-                uri = uri.replaceAll("(?i)%2e", ".")
-                        .replaceAll("(?i)%2f", "/")
-                        .replaceAll("(?i)%5c", "/");
+            // Only hand the request to DefaultServlet when it targets a regular, non-hidden file
+            // inside any configured static directory.
+            String path = req.getServletPath() + (req.getPathInfo() != null ? req.getPathInfo() : "");
+            List<Path> baseDirs = getStaticBaseDirs();
 
-                if (uri.indexOf('/') != -1)
-                    uri = uri.substring(0, uri.indexOf("/"));
+            if (isForbiddenPath(path)) {
+                logger.warning("Rejected forbidden file access attempt: " + path);
+                resp.setStatus(HttpServletResponse.SC_FORBIDDEN);
+                resp.setContentType("text/plain; charset=UTF-8");
+                resp.getWriter().write("This request is forbidden!");
+                return;
+            }
 
-                // Reject any segment that could escape the current directory.
-                if (uri.equals("..") || uri.equals(".") || uri.contains("..")) {
-                    this.service(req, resp);
-                    return;
+            if (path.length() > 1 && resolveStaticFile(baseDirs, path) != null) {
+                final long now = System.currentTimeMillis();
+                resp.addHeader("Cache-Control", "public, max-age=86400, must-revalidate");
+                resp.setDateHeader("Expires", now + 86400000L);
+                chain.doFilter(request, response);
+                return;
+            }
+
+            if (isProjectRootFile(path)) {
+                logger.warning("Rejected attempt to download project root file: " + path);
+                resp.setStatus(HttpServletResponse.SC_FORBIDDEN);
+                resp.setContentType("text/plain; charset=UTF-8");
+                resp.getWriter().write("This request is forbidden!");
+                return;
+            }
+
+            this.service(req, resp);
+        }
+
+        private static boolean isForbiddenPath(String decoded) {
+            if (decoded == null || decoded.isEmpty() || decoded.length() > 2048) {
+                return true;
+            }
+            if (decoded.indexOf('\0') >= 0) {
+                return true;
+            }
+            String relative = decoded.startsWith("/") ? decoded.substring(1) : decoded;
+            relative = relative.replace('\\', '/');
+            for (String segment : relative.split("/")) {
+                if (segment.equals("..") || segment.equals(".")) {
+                    return true;
                 }
+            }
+            return false;
+        }
 
-                File resource = new File(uri);
-                if (resource.exists()) {
-                    chain.doFilter(request, response);
-                } else {
-                    this.service(req, resp);
+        private static boolean isProjectRootFile(String decoded) {
+            if (decoded == null || decoded.isEmpty()) return false;
+            String relative = decoded.startsWith("/") ? decoded.substring(1) : decoded;
+            relative = relative.replace('\\', '/');
+            if (relative.isEmpty() || relative.indexOf(':') >= 0 || relative.indexOf('\0') >= 0) return false;
+            Path workDir = Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
+            try {
+                Path candidate = workDir.resolve(relative).normalize();
+                if (candidate.startsWith(workDir) && !candidate.equals(workDir)) {
+                    return Files.isRegularFile(candidate);
                 }
-            } else
-                this.service(req, resp);
+            } catch (InvalidPathException ignored) {
+            }
+            return false;
+        }
+
+        private List<Path> getStaticBaseDirs() {
+            Path workDir = Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
+            String staticDirConfig = settings.get("server.static.dirs");
+            if (staticDirConfig == null || staticDirConfig.trim().isEmpty()) {
+                staticDirConfig = settings.getOrDefault("server.static.dir", "static");
+            }
+            String[] dirs = staticDirConfig.split("[,;]");
+            List<Path> list = new ArrayList<>(dirs.length);
+            for (String dir : dirs) {
+                dir = dir.trim();
+                if (dir.isEmpty()) continue;
+                Path base = workDir.resolve(dir).toAbsolutePath().normalize();
+                if (!workDir.startsWith(base) && Files.isDirectory(base)) {
+                    list.add(base);
+                }
+            }
+            return list;
         }
 
         private boolean isSSE(HttpServletRequest request) {
